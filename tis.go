@@ -67,12 +67,10 @@ func tisList(tags string, fileHandle *os.File) {
 		for _, tagListTag := range tagList {
 			if tag == tagListTag.name {
 				fileNameLength := readIntAtOffset(int64(tagListTag.offset), fileHandle)
-
-				fileNameBytes := make([]byte, fileNameLength)
-				_, _ = fileHandle.Read(fileNameBytes)
+				fileNameList := string(readBytes(tagListTag.offset+4, fileNameLength, fileHandle))
 
 				re := regexp.MustCompile(`[0-9]*\.(png|jpg|gif)`)
-				fileNames := re.FindAllString(string(fileNameBytes), -1)
+				fileNames := re.FindAllString(fileNameList, -1)
 				files = append(files, fileNames...)
 			}
 		}
@@ -317,6 +315,11 @@ func addFile(fileName string, tags []string, fileHandle *os.File) {
 			}
 		}
 	}
+}
+
+func printFileSize(fileHandle *os.File) {
+	fileInfo, _ := fileHandle.Stat()
+	fmt.Println("File size:", fileInfo.Size())
 }
 
 func readBytes(offset int32, length int32, fileHandle *os.File) []byte {

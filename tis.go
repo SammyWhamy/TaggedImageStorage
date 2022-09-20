@@ -8,6 +8,15 @@ import (
 	"strings"
 )
 
+const TagCount = 4
+const FileCount = 8
+const TagListOffset = 12
+const TagListLength = 16
+const IndexOffset = 20
+const IndexLength = 24
+const FolderLength = 28
+const FolderOffset = 32
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("No arguments given.")
@@ -79,7 +88,7 @@ func tisAddFile(args []string, fileHandle *os.File) {
 	fileName := strings.Replace(args[0], "\"", "", -1)
 	fileExtension := fileName[strings.LastIndex(fileName, ".")+1:]
 	fileTags := strings.Split(strings.Replace(args[1], "\"", "", -1), ";")
-	fileCount := readIntAtOffset(8, fileHandle)
+	fileCount := readIntAtOffset(FileCount, fileHandle)
 	dataFolder := getDataFolderName(fileHandle)
 
 	fmt.Println("Using data folder:", dataFolder)
@@ -111,7 +120,7 @@ func tisAddFile(args []string, fileHandle *os.File) {
 		os.Exit(1)
 	}
 
-	writeIntAtOffset(8, fileCount+1, fileHandle)
+	writeIntAtOffset(FileCount, fileCount+1, fileHandle)
 	addTags(fileTags, fileHandle)
 	addFile(newFileName, fileTags, fileHandle)
 }
@@ -119,8 +128,8 @@ func tisAddFile(args []string, fileHandle *os.File) {
 func tisInfo(fileHandle *os.File) {
 	fmt.Println("Index file info:")
 
-	tagCount := readIntAtOffset(4, fileHandle)
-	fileCount := readIntAtOffset(8, fileHandle)
+	tagCount := readIntAtOffset(TagCount, fileHandle)
+	fileCount := readIntAtOffset(FileCount, fileHandle)
 	tags := getTags(fileHandle)
 	dataFolder := getDataFolderName(fileHandle)
 
@@ -168,18 +177,14 @@ func tisInit() {
 }
 
 func getDataFolderName(fileHandle *os.File) string {
-	dataLength := readIntAtOffset(28, fileHandle)
-	dataBytes := make([]byte, dataLength)
-
-	_, _ = fileHandle.Seek(32, 0)
-	_, _ = fileHandle.Read(dataBytes)
-
+	dataLength := readIntAtOffset(FolderLength, fileHandle)
+	dataBytes := readBytes(FolderOffset, dataLength, fileHandle)
 	return string(dataBytes)
 }
 
 func getTags(fileHandle *os.File) []Tag {
-	tagCount := readIntAtOffset(4, fileHandle)
-	tagListOffset := readIntAtOffset(12, fileHandle)
+	tagCount := readIntAtOffset(TagCount, fileHandle)
+	tagListOffset := readIntAtOffset(TagListOffset, fileHandle)
 
 	_, _ = fileHandle.Seek(int64(tagListOffset), 0)
 
@@ -212,8 +217,8 @@ func addTags(tags []string, fileHandle *os.File) {
 	tagCount := len(tagListNames)
 	tagListBytes := make([]byte, 0)
 
-	tagListOffset := readIntAtOffset(12, fileHandle)
-	tagListLength := readIntAtOffset(16, fileHandle)
+	tagListOffset := readIntAtOffset(TagListOffset, fileHandle)
+	tagListLength := readIntAtOffset(TagListLength, fileHandle)
 
 	fileListOffset := tagListOffset + tagListLength
 
@@ -233,26 +238,22 @@ func addTags(tags []string, fileHandle *os.File) {
 	}
 
 	if len(tagListBytes) > 0 {
-		indexLength := readIntAtOffset(24, fileHandle)
-		tempBytes := make([]byte, indexLength)
+		indexLength := readIntAtOffset(IndexLength, fileHandle)
+
+		tempBytes := make([]byte, 0)
 
 		if indexLength > 0 {
-			indexOffset := readIntAtOffset(20, fileHandle)
-
-			_, _ = fileHandle.Seek(int64(indexOffset), 0)
-			_, _ = fileHandle.Read(tempBytes)
+			indexOffset := readIntAtOffset(IndexOffset, fileHandle)
+			tempBytes = readBytes(indexOffset, indexLength, fileHandle)
 		}
 
-		existingTagListBytes := make([]byte, tagListLength)
-		_, _ = fileHandle.Seek(int64(tagListOffset), 0)
-		_, _ = fileHandle.Read(existingTagListBytes)
+		existingTagListBytes := readBytes(tagListOffset, tagListLength, fileHandle)
 
-		_, _ = fileHandle.Seek(int64(tagListOffset+tagListLength), 0)
-		_, _ = fileHandle.Write(tagListBytes)
+		writeBytes(tagListOffset+tagListLength, tagListBytes, fileHandle)
 
-		writeIntAtOffset(16, tagListLength+int32(len(tagListBytes)), fileHandle)
-		writeIntAtOffset(4, int32(tagCount), fileHandle)
-		writeIntAtOffset(20, tagListOffset+tagListLength+int32(len(tagListBytes)), fileHandle)
+		writeIntAtOffset(TagListLength, tagListLength+int32(len(tagListBytes)), fileHandle)
+		writeIntAtOffset(TagCount, int32(tagCount), fileHandle)
+		writeIntAtOffset(IndexOffset, tagListOffset+tagListLength+int32(len(tagListBytes)), fileHandle)
 
 		for i := 0; i < len(existingTagListBytes); {
 			currentTagOffset := int32FromArray(existingTagListBytes[i : i+4])
@@ -261,8 +262,7 @@ func addTags(tags []string, fileHandle *os.File) {
 		}
 
 		if len(tempBytes) > 0 {
-			_, _ = fileHandle.Seek(int64(tagListOffset+tagListLength+int32(len(tagListBytes))), 0)
-			_, _ = fileHandle.Write(tempBytes)
+			writeBytes(tagListOffset+tagListLength+int32(len(tagListBytes)), tempBytes, fileHandle)
 		}
 	}
 }
@@ -273,88 +273,42 @@ func addFile(fileName string, tags []string, fileHandle *os.File) {
 
 		for _, t := range tagList {
 			if t.name == tag {
-				fmt.Println("Adding file: " + fileName + " to tag: " + tag)
+				indexLength := readIntAtOffset(IndexLength, fileHandle)
 
-				indexLength := readIntAtOffset(24, fileHandle)
-
-				fmt.Println("Tag offset: " + strconv.Itoa(int(t.offset)))
 				if t.offset == 0 {
-					indexOffset := readIntAtOffset(20, fileHandle)
-
+					indexOffset := readIntAtOffset(IndexOffset, fileHandle)
 					t.offset = indexOffset + indexLength
-					fmt.Println("New tag offset: " + strconv.Itoa(int(t.offset)))
 				}
 
 				fileListLength := readIntAtOffset(int64(t.offset), fileHandle)
 
-				fmt.Println("File list length: " + strconv.Itoa(int(fileListLength)))
-
 				writeIntAtOffset(int64(t.offset), fileListLength+int32(len(fileName)), fileHandle)
 
-				_, _ = fileHandle.Seek(int64(t.offset+4+fileListLength), 0)
-
-				tempBytesLength := 0
-				if fileListLength != 0 {
-					tempBytesLength = int(indexLength - fileListLength)
+				if fileListLength != 0 && indexLength-fileListLength > 0 {
+					tempBytes := readBytes(t.offset+4+fileListLength, indexLength-fileListLength, fileHandle)
+					writeBytes(t.offset+4+fileListLength+int32(len(fileName)), tempBytes, fileHandle)
 				}
 
-				fmt.Println("Temp bytes length: " + strconv.Itoa(tempBytesLength))
+				writeBytes(t.offset+4+fileListLength, []byte(fileName), fileHandle)
+				writeIntAtOffset(IndexLength, indexLength+int32(len(fileName))+4, fileHandle)
 
-				tempBytes := make([]byte, tempBytesLength)
-				if len(tempBytes) > 0 {
-					_, _ = fileHandle.Read(tempBytes)
-				}
-
-				fmt.Println("Writing filename at offset: " + strconv.Itoa(int(t.offset+fileListLength)))
-
-				_, _ = fileHandle.Seek(int64(t.offset+4+fileListLength), 0)
-				_, _ = fileHandle.Write([]byte(fileName))
-
-				if len(tempBytes) > 0 {
-					_, _ = fileHandle.Write(tempBytes)
-				}
-
-				writeIntAtOffset(24, indexLength+int32(len(fileName))+4, fileHandle)
-
-				tagListOffset := readIntAtOffset(12, fileHandle)
-				tagListLength := readIntAtOffset(16, fileHandle)
-
-				_, _ = fileHandle.Seek(int64(tagListOffset), 0)
-				tagListBytes := make([]byte, tagListLength)
-				_, _ = fileHandle.Read(tagListBytes)
-
-				fmt.Println("Tag list bytes: " + string(tagListBytes))
+				tagListOffset := readIntAtOffset(TagListOffset, fileHandle)
+				tagListLength := readIntAtOffset(TagListLength, fileHandle)
+				tagListBytes := readBytes(tagListOffset, tagListLength, fileHandle)
 
 				found := false
 
 				for i := 0; i < len(tagListBytes); {
 					currentTagOffset := int32FromArray(tagListBytes[i : i+4])
 					tagLength := int32FromArray(tagListBytes[i+4 : i+8])
-
-					fmt.Println("Tag length: " + strconv.Itoa(int(tagLength)))
-
 					tagName := string(tagListBytes[i+8 : i+8+int(tagLength)])
 
-					fmt.Println("Updating offset for tag: " + tagName)
-
 					if tagName != tag && !found {
-						fmt.Println("Skipping.")
 
-						i += 8 + int(tagLength)
-						continue
-					}
-
-					if !found {
-						fmt.Println("Updating current tag with new offset: ", t.offset)
-
+					} else if !found {
 						writeIntAtOffset(int64(int(tagListOffset)+i), t.offset, fileHandle)
-						i += 8 + int(tagLength)
 						found = true
-						continue
-					}
-
-					if currentTagOffset != 0 {
-						fmt.Println("Updating next tag with new offset: ", currentTagOffset+int32(len(fileName)))
+					} else if currentTagOffset != 0 {
 						writeIntAtOffset(int64(int(tagListOffset)+i), currentTagOffset+int32(len(fileName)), fileHandle)
 					}
 
@@ -363,6 +317,18 @@ func addFile(fileName string, tags []string, fileHandle *os.File) {
 			}
 		}
 	}
+}
+
+func readBytes(offset int32, length int32, fileHandle *os.File) []byte {
+	_, _ = fileHandle.Seek(int64(offset), 0)
+	bytes := make([]byte, length)
+	_, _ = fileHandle.Read(bytes)
+	return bytes
+}
+
+func writeBytes(offset int32, bytes []byte, fileHandle *os.File) {
+	_, _ = fileHandle.Seek(int64(offset), 0)
+	_, _ = fileHandle.Write(bytes)
 }
 
 func int32FromArray(bytes []byte) int32 {

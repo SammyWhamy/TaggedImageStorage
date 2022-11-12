@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
+	"time"
 )
 
 const TagCount = 4
@@ -17,7 +18,13 @@ const IndexLength = 24
 const FolderLength = 28
 const FolderOffset = 32
 
+const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+
+var verbose = false
+
 func main() {
+	rand.Seed(time.Now().UnixNano())
+
 	if len(os.Args) < 2 {
 		fmt.Println("No arguments given.")
 		os.Exit(1)
@@ -25,27 +32,134 @@ func main() {
 
 	args := os.Args[1:]
 
-	if args[0] == "init" {
+	switch args[0] {
+	case "init":
 		tisInit()
+	case "help", "--help", "-h":
+		tisHelp()
+	case "version", "--version", "-v":
+		fmt.Println("Tagged Image Storage v1.0.0")
 		os.Exit(0)
 	}
+
+	exclusiveMode := false
+	moveFile := true
+	setFileName := ""
+
+	excludeTags := ""
+	contains, index := Contains(args, "--exclude")
+	if contains {
+		excludeTags = args[index+1]
+		args = append(args[:index], args[index+2:]...)
+	}
+
+	for _, arg := range args {
+		if arg == "--exclusive" {
+			exclusiveMode = true
+		} else if arg == "--no-move" {
+			moveFile = false
+		} else if arg == "--verbose" || arg == "-V" {
+			verbose = true
+		} else if strings.HasPrefix(arg, "--file-name=") {
+			setFileName = strings.Split(arg, "=")[1]
+			if setFileName == "*" {
+				split := strings.Split(args[1], ".")
+				setFileName = randomString(16) + "." + split[len(split)-1]
+			}
+		}
+	}
+
+	nonFlagArgs := make([]string, 0)
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			nonFlagArgs = append(nonFlagArgs, arg)
+		}
+	}
+
+	printVerbose("Using options:")
+	printVerbose("    Exclude tags:", excludeTags)
+	printVerbose("    Exclusive mode:", exclusiveMode)
+	printVerbose("    Move file:", moveFile)
+	printVerbose("    Verbose:", verbose)
+	printVerbose("    Set file name:", setFileName)
+	printVerbose()
 
 	fileHandle, err := getFileHandle(nil)
 
 	if err != nil {
-		errorAndExit("Error opening index file.", err, nil)
+		errorAndExit("Error opening index file.", err, fileHandle)
 	}
 
-	switch args[0] {
+	switch nonFlagArgs[0] {
 	case "info":
 		tisInfo(fileHandle)
 	case "add-file":
-		tisAddFile(args[1:3], fileHandle)
+		{
+			if len(nonFlagArgs) < 4 {
+				errorAndExit("Not enough arguments.", nil, fileHandle)
+			}
+			tisAddFile(nonFlagArgs[1:3], setFileName, moveFile, fileHandle)
+		}
 	case "list":
-		tisList(args[1], fileHandle)
+		{
+			if len(nonFlagArgs) < 2 {
+				errorAndExit("Not enough arguments.", nil, fileHandle)
+			}
+			tisList(nonFlagArgs[1], excludeTags, exclusiveMode, fileHandle)
+		}
+	case "random":
+		{
+			if len(nonFlagArgs) > 1 {
+				tisRandom(nonFlagArgs[1], excludeTags, fileHandle)
+			} else {
+				tisRandom("", excludeTags, fileHandle)
+			}
+		}
+	default:
+		tisUnknownCommand()
 	}
 
 	_ = fileHandle.Close()
+}
+
+func tisUnknownCommand() {
+	fmt.Println("Unknown command.")
+	fmt.Println("Use 'tis help' to see a list of commands.")
+	os.Exit(1)
+}
+
+func tisHelp() {
+	fmt.Println("Help for Tagged Image Storage")
+	fmt.Println("Usage: tis <command> [arguments] [options]")
+	fmt.Println("Basic info:")
+	fmt.Println("    Options are specified after the command, in any order.")
+	fmt.Println("    File lists and tags are surrounded by double quotes (\")")
+	fmt.Println("    Tags are separated by semicolons (;)")
+	fmt.Println("    Commands prefixed with !! are not implemented yet.")
+	fmt.Println("Commands:")
+	fmt.Println("    init - Initialize a new index file.")
+	fmt.Println("    info - Show information about the index file.")
+	fmt.Println("    add-file <file> <tags> - Add a file to the index.")
+	fmt.Println("    !! remove-file <file> - Remove a file from the index.")
+	fmt.Println("    list <tags> - List all files with the given tags.")
+	fmt.Println("    random <?tags> - Get a random file from the index.")
+	fmt.Println("    !! add-tag <file> <tag> - Add a tag to a file.")
+	fmt.Println("    !! remove-tag <file> <tag> - Remove a tag from a file.")
+	fmt.Println("    !! file-tags <file> - List all tags for a file.")
+	fmt.Println("    !! delete-tag <tag> - Delete a tag from the index.")
+	fmt.Println("    !! rename-tag <old> <new> - Rename a tag.")
+	fmt.Println("    !! rename-data-folder <new> - Rename the data folder.")
+	fmt.Println("    !! export <?filename> - Export the index to a human-readable file.")
+	fmt.Println("    help - Show this.")
+	fmt.Println("    version - Show the version.")
+	fmt.Println("Flags:")
+	fmt.Println("    --exclusive (list) - Only show files with all tags.")
+	fmt.Println("    --exclude <tags> (list, random) - Exclude files with the given tags.")
+	fmt.Println("    --no-move (add-file) - Don't move the file to the data folder.")
+	fmt.Println("    --file-name=<name> (add-file) - Set the name of the file in the data folder, use * for a random name that keeps the extension.")
+	fmt.Println("    --verbose - Show debug output.")
+
+	os.Exit(0)
 }
 
 func getFileHandle(file *os.File) (*os.File, error) {
@@ -56,9 +170,104 @@ func getFileHandle(file *os.File) (*os.File, error) {
 	}
 }
 
-func tisList(tags string, fileHandle *os.File) {
-	splitTags := strings.Split(strings.Replace(tags, "\"", "", -1), ";")
+func tisRandom(tags string, excludeTags string, fileHandle *os.File) {
+	tagString := ""
 
+	if tags != "" {
+		tagString = tags
+		printVerbose("Using tags:", tagString)
+	} else {
+		tagList := getTags(fileHandle)
+		tagString = ""
+
+		for _, tag := range tagList {
+			tagString += tag.name + ";"
+		}
+
+		tagString = tagString[:len(tagString)-1]
+	}
+
+	files := getFilesByTags(tagString, fileHandle)
+	filesToExclude := getFilesByTags(excludeTags, fileHandle)
+
+	printVerbose("Found", len(files), "files")
+	printVerbose("Excluding", len(filesToExclude), "files")
+
+	var filteredFiles []string
+
+	for _, file := range files {
+		included := false
+		for _, excludeFile := range filesToExclude {
+			if file == excludeFile {
+				included = true
+				break
+			}
+		}
+
+		if !included {
+			filteredFiles = append(filteredFiles, file)
+		}
+	}
+
+	printVerbose("Found", len(filteredFiles), "files.")
+
+	if len(filteredFiles) == 0 {
+		fmt.Println("No files found.")
+		os.Exit(1)
+	}
+
+	exists := make(map[string]bool)
+	uniqueFiles := make([]string, 0)
+
+	for _, file := range filteredFiles {
+		if !exists[file] {
+			uniqueFiles = append(uniqueFiles, file)
+			exists[file] = true
+		}
+	}
+
+	fmt.Println(uniqueFiles[rand.Intn(len(uniqueFiles))])
+}
+
+func tisList(tags string, excludeTags string, exclusiveMode bool, fileHandle *os.File) {
+	files := getFilesByTags(tags, fileHandle)
+	filesToExclude := getFilesByTags(excludeTags, fileHandle)
+
+	for _, file := range filesToExclude {
+		for i, f := range files {
+			if f == file {
+				files = append(files[:i], files[i+1:]...)
+			}
+		}
+	}
+
+	exclusiveFiles := make([]string, 0)
+
+	if exclusiveMode {
+		tagCount := len(strings.Split(tags, ";"))
+		counts := make(map[string]int)
+
+		for _, file := range files {
+			counts[file]++
+		}
+
+		for file, count := range counts {
+			if count == tagCount {
+				exclusiveFiles = append(exclusiveFiles, file)
+			}
+		}
+	}
+
+	if exclusiveMode {
+		fmt.Println(strings.Join(exclusiveFiles, ", "))
+	} else {
+		fmt.Println(strings.Join(files, ", "))
+	}
+
+}
+
+func getFilesByTags(tags string, fileHandle *os.File) []string {
+	splitTags := strings.Split(strings.Replace(tags, "\"", "", -1), ";")
 	tagList := getTags(fileHandle)
 
 	files := make([]string, 0)
@@ -69,58 +278,84 @@ func tisList(tags string, fileHandle *os.File) {
 				fileNameLength := readIntAtOffset(int64(tagListTag.offset), fileHandle)
 				fileNameList := string(readBytes(tagListTag.offset+4, fileNameLength, fileHandle))
 
-				re := regexp.MustCompile(`[0-9]*\.(png|jpg|gif)`)
+				re := regexp.MustCompile(`[a-zA-Z0-9-]*\.(jpg|png|gif|jpeg|webp)`)
 				fileNames := re.FindAllString(fileNameList, -1)
 				files = append(files, fileNames...)
 			}
 		}
 	}
 
-	fmt.Println("File location:", "./"+getDataFolderName(fileHandle)+"/")
-	fmt.Println("Files:", strings.Join(files, ", "))
+	return files
 }
 
-func tisAddFile(args []string, fileHandle *os.File) {
-	fmt.Println("Adding file to index.")
+func tisAddFile(args []string, setFileName string, moveFile bool, fileHandle *os.File) {
+	printVerbose("Adding file to index.")
 
-	fileName := strings.Replace(args[0], "\"", "", -1)
-	fileExtension := fileName[strings.LastIndex(fileName, ".")+1:]
+	filePath := strings.Replace(args[0], "\"", "", -1)
 	fileTags := strings.Split(strings.Replace(args[1], "\"", "", -1), ";")
 	fileCount := readIntAtOffset(FileCount, fileHandle)
 	dataFolder := getDataFolderName(fileHandle)
 
-	fmt.Println("Using data folder:", dataFolder)
+	err := error(nil)
 
-	_, err := os.Stat(dataFolder)
-	if os.IsNotExist(err) {
-		fmt.Println("Data folder does not exist, creating it.")
-		err := os.Mkdir(dataFolder, 0777)
-		if err != nil {
-			errorAndExit("Error creating data folder.", err, fileHandle)
+	if moveFile {
+		printVerbose("Using data folder:", dataFolder)
+
+		_, err = os.Stat(dataFolder)
+		if os.IsNotExist(err) {
+			printVerbose("Data folder does not exist, creating it.")
+			err = os.Mkdir(dataFolder, 0777)
+			if err != nil {
+				errorAndExit("Error creating data folder.", err, fileHandle)
+			}
+		} else if err != nil {
+			errorAndExit("Error checking if data folder exists.", err, fileHandle)
 		}
-	} else if err != nil {
-		errorAndExit("Error checking if data folder exists.", err, fileHandle)
 	}
 
-	newFileName := strconv.Itoa(int(fileCount+1)) + "." + fileExtension
-
-	_, err = os.Stat(dataFolder + "/" + fileName)
-	if os.IsNotExist(err) {
-		fmt.Println("Moving file to data folder.")
-		err := os.Rename(fileName, dataFolder+"/"+newFileName)
-		if err != nil {
-			errorAndExit("Error moving file to data folder.", err, fileHandle)
-		}
-	} else if err != nil {
-		errorAndExit("Error checking if file exists in data folder.", err, fileHandle)
+	fileName := ""
+	if setFileName == "" {
+		fileName = filePath[strings.LastIndex(filePath, "/")+1:]
 	} else {
-		fmt.Println("File already exists, aborting.")
-		os.Exit(1)
+		fileName = setFileName
+	}
+
+	if moveFile {
+		_, err = os.Stat(dataFolder + "/" + fileName)
+		if os.IsNotExist(err) {
+			printVerbose("Moving file to data folder.")
+			if setFileName != "" {
+				printVerbose("Using file name:", fileName)
+			}
+			err = os.Rename(filePath, dataFolder+"/"+fileName)
+			if err != nil {
+				errorAndExit("Error moving file to data folder.", err, fileHandle)
+			}
+		} else if err != nil {
+			errorAndExit("Error checking if file exists in data folder.", err, fileHandle)
+		} else {
+			errorAndExit("File already exists in data folder.", err, fileHandle)
+		}
+	} else if setFileName != "" {
+		_, err = os.Stat(fileName)
+		if os.IsNotExist(err) {
+			printVerbose("Renaming file to:", fileName)
+			err = os.Rename(filePath, fileName)
+			if err != nil {
+				errorAndExit("Error renaming file.", err, fileHandle)
+			}
+		} else if err != nil {
+			errorAndExit("Error checking if file exists.", err, fileHandle)
+		} else {
+			errorAndExit("File already exists, cannot rename.", err, fileHandle)
+		}
 	}
 
 	writeIntAtOffset(FileCount, fileCount+1, fileHandle)
 	addTags(fileTags, fileHandle)
-	addFile(newFileName, fileTags, fileHandle)
+	addFile(fileName, fileTags, fileHandle)
+
+	fmt.Println("Added file to index.")
 }
 
 func tisInfo(fileHandle *os.File) {
@@ -148,8 +383,7 @@ func tisInit() {
 	file, err := os.OpenFile("index.tis", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0666)
 
 	if err == os.ErrExist {
-		fmt.Println("Index file already exists, aborting.")
-		os.Exit(1)
+		errorAndExit("Index file already exists.", err, file)
 	}
 
 	if err != nil {
@@ -172,6 +406,8 @@ func tisInit() {
 	_ = file.Close()
 
 	fmt.Println("Index file created.")
+
+	os.Exit(0)
 }
 
 func getDataFolderName(fileHandle *os.File) string {
@@ -221,13 +457,15 @@ func addTags(tags []string, fileHandle *os.File) {
 	fileListOffset := tagListOffset + tagListLength
 
 	for _, tag := range tags {
-		if !Contains(tagListNames, tag) {
+		contains, _ := Contains(tagListNames, tag)
+		if !contains {
 			fileListOffset += int32(8 + len(tag))
 		}
 	}
 
 	for _, tag := range tags {
-		if !Contains(tagListNames, tag) {
+		contains, _ := Contains(tagListNames, tag)
+		if !contains {
 			tagCount++
 			tagListBytes = append(tagListBytes, []byte{0x00, 0x00, 0x00, 0x00}...)
 			tagListBytes = append(tagListBytes, arrayFromInt32(int32(len(tag)))...)
@@ -317,11 +555,6 @@ func addFile(fileName string, tags []string, fileHandle *os.File) {
 	}
 }
 
-func printFileSize(fileHandle *os.File) {
-	fileInfo, _ := fileHandle.Stat()
-	fmt.Println("File size:", fileInfo.Size())
-}
-
 func readBytes(offset int32, length int32, fileHandle *os.File) []byte {
 	_, _ = fileHandle.Seek(int64(offset), 0)
 	bytes := make([]byte, length)
@@ -358,21 +591,41 @@ func writeIntAtOffset(offset int64, data int32, fileHandle *os.File) {
 	_, _ = fileHandle.Write(arrayFromInt32(data))
 }
 
-func Contains[T comparable](s []T, e T) bool {
-	for _, v := range s {
+func Contains[T comparable](s []T, e T) (bool, int) {
+	for i, v := range s {
 		if v == e {
-			return true
+			return true, i
 		}
 	}
-	return false
+	return false, -1
 }
 
 func errorAndExit(message string, err error, fileHandle *os.File) {
 	if fileHandle != nil {
 		_ = fileHandle.Close()
 	}
-	fmt.Println(message, "\n\t", err)
+
+	if err != nil {
+		fmt.Println(message, "\n\t", err)
+	} else {
+		fmt.Println(message)
+	}
+
 	os.Exit(1)
+}
+
+func randomString(length int) string {
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = letters[rand.Int63()%int64(len(letters))]
+	}
+	return string(b)
+}
+
+func printVerbose(a ...any) {
+	if verbose {
+		fmt.Println(a...)
+	}
 }
 
 type Tag struct {

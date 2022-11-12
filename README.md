@@ -5,10 +5,8 @@
 - [ ] **Feature** • Add support for getting single random files
 - [ ] **Refactor** • Make code more readable and refactor into different files
 - [ ] **Docs** • Add comments to explain confusing parts of the code
-- [ ] **Feature** • Allow enabling verbose output to log operation and stats such as file growth, added tags, offsets, execution time, etc.
 - [ ] **Testing** • Add automated testing
 - [ ] **Feature** • Add support for the rest of the flags and commands that have not been implemented yet
-- [ ] **Feature** • Allow automatic fixing of the index file based on contents of the data folder (E.g. remove files that no longer exist)
 
 ## Steps to run TIS
 
@@ -43,16 +41,25 @@ path/to/image3.jpg tag1;tag2;tag3
 
 ### Commands
 ```shell
+# Help
+tis help / --help / -h
+
+# Version
+tis version / --version / -v
+
 # Initialize the index file
-tis init # Implemented
+tis init
+
+# Query info about the index
+tis info
 
 # Add or remove files from the index
-tis add-file "path/to/file" "semicolon;separated;tags" # Implemented
+tis add-file "path/to/file" "semicolon;separated;tags"
 tis remove-file "path/to/file" # Not implemented yet
 
 # Query the index for files
-tis list "semicolon;separated;tags" # Implemented
-tis random "semicolon;separated;tags" # Not implemented yet
+tis list "semicolon;separated;tags"
+tis random ["semicolon;separated;tags"]
 
 # Edit existing tags on a file
 tis add-tag "path/to/file" "semicolon;separated;tags" # Not implemented yet
@@ -64,29 +71,29 @@ tis file-tags "path/to/file" # Not implemented yet
 # Globally remove tags
 tis delete-tag "semicolon;separated;tags" # Not implemented yet
 
+# Rename a tag
+tis rename-tag "old_tag" "new_tag" # Not implemented yet
+
 # Rename data folder
 tis rename-data-folder "new_folder_name" # Not implemented yet
 
-# Query info about the index
-tis info # Implemented
+# Export the index file
+tis export ["path/to/export/file"] # Not implemented yet
 ```
 
 ### Flags
 ```shell
-# Help
-tis --help, -h # Not implemented yet
-
-# Version
-tis --version, -v # Not implemented yet
-
 # Verbose
-tis --verbose, -V # Not implemented yet
+tis --verbose, -V
 
-# Specify file name
-tis add-file "path/to/file" "semicolon;separated;tags" --file-name "new_file_name" # Not implemented yet
+# Specify file name, use * as filename to use a random file name that keeps the extension
+tis add-file "path/to/file" "semicolon;separated;tags" --file-name="new_file_name"
+
+# Don't move the file to the data folder
+tis add-file "path/to/file" "semicolon;separated;tags" --no-movet
 
 # Mode for listing files
-tis list "semicolon;separated;tags" --mode "AND" # Not implemented yet
+tis list "semicolon;separated;tags" --exlusive
 ```
 
 ### Notes:
